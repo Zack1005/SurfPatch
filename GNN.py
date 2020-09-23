@@ -13,7 +13,8 @@ import dgl
 from dgl.nn.pytorch import GraphConv,SAGEConv
 from dgl import DGLGraph
 import networkx as nx
-
+import SurfaceProcesser as sp
+import surfaceIO
 parser = argparse.ArgumentParser(description='PyTorch Implementation of V2V')
 parser.add_argument('--lr', type=float, default=1e-4, metavar='LR',
                     help='learning rate of G')
@@ -35,7 +36,6 @@ parser.add_argument('--loss', type=str, default = 'shortest',
                     help='')
 parser.add_argument('--mode', type=str, default = 'train',
                     help='')
-
 
 args = parser.parse_args()
 print(not args.no_cuda)
@@ -141,123 +141,124 @@ class MultiHopLoss(nn.Module):
 		similarity = torch.mm(features,torch.transpose(features,0,1)) 
 		return nn.MSELoss()(similarity*mask,adjacency_matrix*mask)
 
-class RandomWalkLoss(object):
-	def __init__(self, adj_lists, train_nodes):
-		super(RandomWalkLoss, self).__init__()
-		self.Q = 10
-		self.N_WALKS = 5
-		self.WALK_LEN = 1
-		self.N_WALK_LEN = 5
-		self.adj_lists = adj_lists
-		self.train_nodes = train_nodes
-		self.NEG = 10
+# class RandomWalkLoss(object):
+# 	def __init__(self, adj_lists, train_nodes):
+# 		super(RandomWalkLoss, self).__init__()
+# 		self.Q = 10
+# 		self.N_WALKS = 5
+# 		self.WALK_LEN = 1
+# 		self.N_WALK_LEN = 5
+# 		self.adj_lists = adj_lists
+# 		self.train_nodes = train_nodes
+# 		self.NEG = 10
+#
+# 	def random_walk(self,node):
+# 		path = []
+# 		pos = []
+# 		if len(self.adj_lists[int(node)]) == 0:
+# 			return path
+# 		cur_pairs = []
+# 		curr_node = node
+# 		i = 1
+# 		for i in range(self.N_WALKS):
+# 			for j in range(self.WALK_LEN):
+# 				neighs = self.adj_lists[int(curr_node)]
+# 				next_node = random.choice(list(neighs))
+# 				# self co-occurrences are useless
+# 				if next_node != node and next_node in self.train_nodes:
+# 					path.append(next_node)
+# 					curr_node = next_node
+# 		pos.extend([node,pos_node] for pos_node in path)
+# 		return path
+#
+# 	def get_negtive_nodes(self, node):
+# 		neg = []
+# 		neighbors = set([node])
+# 		frontier = set([node])
+# 		for i in range(self.N_WALK_LEN):
+# 			current = set()
+# 			for outer in frontier:
+# 				current |= set(self.adj_lists[int(outer)])
+# 			rontier = current - neighbors
+# 			neighbors |= current
+# 		far_nodes = set(self.train_nodes) - neighbors
+# 		neg_samples = random.sample(far_nodes, self.NEG) if self.NEG < len(far_nodes) else far_nodes
+# 		neg.extend([(node, neg_node) for neg_node in neg_samples])
+# 		return neg_samples
+#
+# 	def random_walk_loss(self,features):
+# 		loss = 0
+# 		similarity = torch.mm(features,torch.transpose(features,0,1))
+# 		#similarity = torch.exp(similarity)
+# 		node_score = []
+# 		for node in self.train_nodes:
+# 			pos = self.random_walk(node)
+#
+# 			neg = self.get_negtive_nodes(node)
+# 			#indexs = [list(x) for x in zip(*neg)]
+# 			#node_indexs = [x for x in indexs[0]]
+# 			#neighb_indexs = [x for x in indexs[1]]
+# 			#neg_score = F.cosine_similarity(features[node_indexs],features[neighb_indexs])
+# 			neg_score = similarity[node][neg]
+# 			neg_score = self.Q*torch.mean(torch.log(torch.sigmoid(-neg_score)), 0)
+#
+# 			# multiple positive score
+# 			#indexs = [list(x) for x in zip(*pos)]
+# 			#node_indexs = [x for x in indexs[0]]
+# 			#neighb_indexs = [x for x in indexs[1]]
+# 			#pos_score = F.cosine_similarity(features[node_indexs],features[neighb_indexs])
+# 			pos_score = similarity[node][pos]
+# 			pos_score = torch.log(torch.sigmoid(pos_score))
+# 			node_score.append(torch.mean(-pos_score-neg_score).view(1,-1))
+#
+# 		loss = torch.mean(torch.cat(node_score, 0))
+#
+# 		return loss
+#
 
-	def random_walk(self,node):
-		path = []
-		pos = []
-		if len(self.adj_lists[int(node)]) == 0:
-			return path
-		cur_pairs = []
-		curr_node = node
-		i = 1
-		for i in range(self.N_WALKS):
-			for j in range(self.WALK_LEN):
-				neighs = self.adj_lists[int(curr_node)]
-				next_node = random.choice(list(neighs))
-				# self co-occurrences are useless
-				if next_node != node and next_node in self.train_nodes:
-					path.append(next_node)
-					curr_node = next_node
-		pos.extend([node,pos_node] for pos_node in path)
-		return path
-
-	def get_negtive_nodes(self, node):
-		neg = []
-		neighbors = set([node])
-		frontier = set([node])
-		for i in range(self.N_WALK_LEN):
-			current = set()
-			for outer in frontier:
-				current |= set(self.adj_lists[int(outer)])
-			rontier = current - neighbors
-			neighbors |= current
-		far_nodes = set(self.train_nodes) - neighbors
-		neg_samples = random.sample(far_nodes, self.NEG) if self.NEG < len(far_nodes) else far_nodes
-		neg.extend([(node, neg_node) for neg_node in neg_samples])
-		return neg_samples
-
-	def random_walk_loss(self,features):
-		loss = 0
-		similarity = torch.mm(features,torch.transpose(features,0,1))
-		#similarity = torch.exp(similarity)
-		node_score = []
-		for node in self.train_nodes:
-			pos = self.random_walk(node)
-			
-			neg = self.get_negtive_nodes(node)
-			#indexs = [list(x) for x in zip(*neg)]
-			#node_indexs = [x for x in indexs[0]]
-			#neighb_indexs = [x for x in indexs[1]]
-			#neg_score = F.cosine_similarity(features[node_indexs],features[neighb_indexs])
-			neg_score = similarity[node][neg]
-			neg_score = self.Q*torch.mean(torch.log(torch.sigmoid(-neg_score)), 0)
-
-			# multiple positive score
-			#indexs = [list(x) for x in zip(*pos)]
-			#node_indexs = [x for x in indexs[0]]
-			#neighb_indexs = [x for x in indexs[1]]
-			#pos_score = F.cosine_similarity(features[node_indexs],features[neighb_indexs])
-			pos_score = similarity[node][pos]
-			pos_score = torch.log(torch.sigmoid(pos_score))
-			node_score.append(torch.mean(-pos_score-neg_score).view(1,-1))
-				
-		loss = torch.mean(torch.cat(node_score, 0))
-	
-		return loss
-
-
-def train(GCN,G,F,A,P,M):
-	device = torch.device("cuda:0" if args.cuda else "cpu")
-	optimizer = optim.Adam(GCN.parameters(), lr=args.lr,betas=(0.9,0.999))
-	if args.loss == 'shortest':
-		Loss = PairWiseLoss()
-	elif args.loss == 'adj': 
-		Loss = MultiHopLoss()
-	elif args.loss == 'random_walk':
-		Loss = RandomWalkLoss()
-	for itera in range(1,args.epochs+1):
-		print("==========="+str(itera)+"===========")
-		loss = 0
-		x = time.time()
-		for i in range(0,len(G)):
-			g = G[i]
-			f = F[i]
-			a = A[i]
-			p = P[i]
-			m = M[i]
-			
-			if args.cuda:
-				f = f.cuda()
-				a = a.cuda()
-				p = p.cuda()
-				m = m.cuda()
-	
-			node_features = GCN(g,f)
-			if args.loss == 'shortest':
-				gcn_loss = Loss(node_features,p,m)
-			elif args.loss == 'adj':
-				gcn_loss = Loss(node_features,a,m)
-			loss += gcn_loss.item()
-			optimizer.zero_grad()
-			gcn_loss.backward()
-			optimizer.step()
-		y = time.time()
-		print("Time = "+str(y-x))
-		print("Loss = "+str(loss))
-		#if itera==40 or itera==80:
-			#adjust_learning_rate(optimizer,itera)
-		if itera%100==0 or itera ==30 or itera==60:
-			torch.save(GCN.state_dict(),path+'/model/'+args.dataset+'-'+'epochs-'+str(itera)+'-samples-'+str(args.samples)+'-loss-'+args.loss+'-init-'+args.init+'-GCN.pth')
+# def train(GCN,G,F,A,P,M):
+# 	device = torch.device("cuda:0" if args.cuda else "cpu")
+# 	optimizer = optim.Adam(GCN.parameters(), lr=args.lr,betas=(0.9,0.999))
+# 	# if args.loss == 'shortest':
+# 	# 	Loss = PairWiseLoss()
+# 	# elif args.loss == 'adj':
+# 	# 	Loss = MultiHopLoss()
+# 	# elif args.loss == 'random_walk':
+# 	# 	Loss = RandomWalkLoss()
+#
+# 	for itera in range(1,args.epochs+1):
+# 		print("==========="+str(itera)+"===========")
+# 		loss = 0
+# 		x = time.time()
+# 		for i in range(0,len(G)):
+# 			g = G[i]
+# 			f = F[i]
+# 			a = A[i]
+# 			p = P[i]
+# 			m = M[i]
+#
+# 			if args.cuda:
+# 				f = f.cuda()
+# 				a = a.cuda()
+# 				p = p.cuda()
+# 				m = m.cuda()
+#
+# 			node_features = GCN(g,f)
+# 			if args.loss == 'shortest':
+# 				gcn_loss = Loss(node_features,p,m)
+# 			elif args.loss == 'adj':
+# 				gcn_loss = Loss(node_features,a,m)
+# 			loss += gcn_loss.item()
+# 			optimizer.zero_grad()
+# 			gcn_loss.backward()
+# 			optimizer.step()
+# 		y = time.time()
+# 		print("Time = "+str(y-x))
+# 		print("Loss = "+str(loss))
+# 		#if itera==40 or itera==80:
+# 			#adjust_learning_rate(optimizer,itera)
+# 		if itera%100==0 or itera ==30 or itera==60:
+# 			torch.save(GCN.state_dict(),path+'/model/'+args.dataset+'-'+'epochs-'+str(itera)+'-samples-'+str(args.samples)+'-loss-'+args.loss+'-init-'+args.init+'-GCN.pth')
 
 
 def adjust_learning_rate(optimizer, epoch):
@@ -354,6 +355,10 @@ def weights_init_kaiming(m):
 		init.constant_(m.bias.data, 0.0)
 
 def main():
+
+
+
+
 	G = []
 	F = []
 	A = []
@@ -361,24 +366,26 @@ def main():
 	M = []
 	num_of_files = 1
 	idx = 1
-	while idx<=args.samples:
-		file_path = path+'Data/'+args.dataset
-		if os.path.exists(file_path+'/adjacency-matrix-'+'{:03d}'.format(num_of_files)+'.graphml'):
-			g, features, adjacency_matrix, mask,paths = InitGraph(file_path,num_of_files)
-			G.append(g)
-			F.append(features)
-			A.append(adjacency_matrix)
-			P.append(paths)
-			M.append(mask)
-			print('Reading '+str(num_of_files)+'th graph')
-			idx += 1
-		num_of_files += 1
-	model = GCN(6)
-	if args.cuda:
-		model.cuda()
-	train(model,G,F,A,P,M)
-	inference(args.epochs)
-	#evulate(100)
+	# while idx<=args.samples:
+	# 	file_path = './Data/'+args.dataset
+	# 	if os.path.exists(file_path+'/adjacency-matrix-'+'{:03d}'.format(num_of_files)+'.graphml'):
+	# 		g, features, adjacency_matrix, mask,paths = InitGraph(file_path,num_of_files)
+	# 		G.append(g)
+	# 		F.append(features)
+	# 		A.append(adjacency_matrix)
+	# 		P.append(paths)
+	# 		M.append(mask)
+	# 		print('Reading '+str(num_of_files)+'th graph')
+	# 		idx += 1
+	# 	num_of_files += 1
+
+
+	# model = GCN(6)
+	# if args.cuda:
+	# 	model.cuda()
+	# # train(model,G,F,A,P,M)
+	# inference(args.epochs)
+	# #evulate(100)
 
 if __name__== "__main__":
 	if args.mode =='train':

@@ -15,6 +15,7 @@ from dgl import DGLGraph
 import networkx as nx
 import SurfaceProcesser as sp
 import surfaceIO
+import random
 parser = argparse.ArgumentParser(description='PyTorch Implementation of V2V')
 parser.add_argument('--lr', type=float, default=1e-4, metavar='LR',
                     help='learning rate of G')
@@ -30,12 +31,15 @@ parser.add_argument('--path', type=str,default='work',
                     help='')
 parser.add_argument('--dataset', type=str,
                     help='')
-parser.add_argument('--init', type=str, default='pos',
+parser.add_argument('--init', type=str, default='vec',
                     help='')
 parser.add_argument('--loss', type=str, default = 'shortest',
                     help='')
 parser.add_argument('--mode', type=str, default = 'train',
                     help='')
+parser.add_argument('--train_sample_per_epoch', type=str, default = 1000,
+                    help='')
+
 
 args = parser.parse_args()
 print(not args.no_cuda)
@@ -53,22 +57,20 @@ else:
 
 
 def InitGraph(file_path,id):
-	graph = nx.read_graphml(file_path+'/adjacency-matrix-'+'{:03d}'.format(id)+'.graphml')
+	graph = nx.read_graphml(file_path+'/adjacent_matrix_'+'{:03d}'.format(id)+'.graphml')
 	num_of_nodes = nx.number_of_nodes(graph)
 	adjacency_matrix = nx.to_numpy_matrix(graph)
 	adjacency_matrix = np.asarray(adjacency_matrix,dtype='<f')
-	if args.init == 'pos' or args.init == 'vec' or args.init == 'pos+vec':
-		features = np.fromfile(file_path+'/nodes-features-'+'{:03d}'.format(id)+'.dat',dtype='<f')
-	elif args.init == 'normal':
-		features = np.fromfile(file_path+'/nodes-features-normals-'+'{:03d}'.format(id)+'.dat',dtype='<f')
-	features = features.reshape(6,num_of_nodes).transpose()
-	if args.init == 'pos':
+	features=np.asarray([])
+	if args.init == 'vec' or args.init == 'torsion' or args.init == 'curvature':
+		features = np.fromfile(file_path+'/node_features_'+'{:03d}'.format(id)+'.bin',dtype='<f')
+	features = features.reshape(5,num_of_nodes).transpose()
+	if args.init == 'vec':
 		features = features[:,0:3]
-	elif args.init == 'vec' or args.init == 'normal':
-		features = features[:,3:6]
-	elif args.init == 'pos+vec':
-		features = features[:,0:6]
-	shortest_path_length =  np.fromfile(file_path+'/shortest-path-'+'{:03d}'.format(id)+'.dat',dtype='int16')
+	elif args.init == 'torsion':
+		features = features[:,3:4]
+	elif args.init == 'curvature':
+		features = features[:,4:]
 	G = dgl.DGLGraph()
 	G.add_nodes(num_of_nodes)
 	for i in range(0,num_of_nodes):
@@ -76,15 +78,8 @@ def InitGraph(file_path,id):
 			if adjacency_matrix[i][j]!=0:
 				G.add_edge(i,j)
 	G.add_edges(G.nodes(), G.nodes())
-	mask = np.zeros((num_of_nodes,num_of_nodes))
-	paths = np.zeros((num_of_nodes,num_of_nodes))
-	idx = 0
-	for k in range(num_of_nodes):
-		for l in range(k):
-			mask[k][l] = 1
-			paths[k][l] = shortest_path_length[idx]
-			idx += 1
-	return G,torch.FloatTensor(features),torch.FloatTensor(adjacency_matrix),torch.FloatTensor(mask),torch.FloatTensor(paths)
+
+	return G,features,adjacency_matrix
 
 
 def GenerateAdjList(adjacency_matrix):
@@ -106,19 +101,28 @@ def GetKOrderAdjacencyMatrix(adjacency_matrix,k):
 
 
 class GCN(nn.Module):
-    def __init__(self,input_dim=3):
-        super(GCN, self).__init__()
-        self.ec1 = GraphConv(input_dim,64,activation=F.relu)
-        self.ec2 = GraphConv(64,128,activation=F.relu)
-        self.ec3 = GraphConv(128,128,activation=F.relu)
-        self.ec4 = GraphConv(128,128,activation=F.relu)
+	def __init__(self, input_dim=3):
+		super(GCN,self).__init__()
+		self.ec1 = GraphConv(input_dim, 64, activation=F.relu)
+		self.ec2 = GraphConv(64, 128, activation=F.relu)
+		self.ec3 = GraphConv(128, 128, activation=F.relu)
+		self.ec4 = GraphConv(128, 128, activation=F.relu)
 
-    def forward(self, g, features):
-    	x = self.ec1(g,features)
-    	x = self.ec2(g,x)
-    	x = self.ec3(g,x)
-    	f = self.ec4(g,x)
-    	return f
+	def forward(self, g, features):
+		x = self.ec1(g, features)
+		x = self.ec2(g, x)
+		x = self.ec3(g, x)
+		f = self.ec4(g, x)
+		return f
+
+
+class ProcrustesLoss(nn.Module):
+	def __init__(self):
+		super(ProcrustesLoss, self).__init__()
+		self.loss = nn.MSELoss()
+	def forward(self,features):
+		#todo define procrustes distance here
+		m = 0
 
 class PairWiseLoss(nn.Module):
 	def __init__(self):
@@ -141,124 +145,118 @@ class MultiHopLoss(nn.Module):
 		similarity = torch.mm(features,torch.transpose(features,0,1)) 
 		return nn.MSELoss()(similarity*mask,adjacency_matrix*mask)
 
-# class RandomWalkLoss(object):
-# 	def __init__(self, adj_lists, train_nodes):
-# 		super(RandomWalkLoss, self).__init__()
-# 		self.Q = 10
-# 		self.N_WALKS = 5
-# 		self.WALK_LEN = 1
-# 		self.N_WALK_LEN = 5
-# 		self.adj_lists = adj_lists
-# 		self.train_nodes = train_nodes
-# 		self.NEG = 10
-#
-# 	def random_walk(self,node):
-# 		path = []
-# 		pos = []
-# 		if len(self.adj_lists[int(node)]) == 0:
-# 			return path
-# 		cur_pairs = []
-# 		curr_node = node
-# 		i = 1
-# 		for i in range(self.N_WALKS):
-# 			for j in range(self.WALK_LEN):
-# 				neighs = self.adj_lists[int(curr_node)]
-# 				next_node = random.choice(list(neighs))
-# 				# self co-occurrences are useless
-# 				if next_node != node and next_node in self.train_nodes:
-# 					path.append(next_node)
-# 					curr_node = next_node
-# 		pos.extend([node,pos_node] for pos_node in path)
-# 		return path
-#
-# 	def get_negtive_nodes(self, node):
-# 		neg = []
-# 		neighbors = set([node])
-# 		frontier = set([node])
-# 		for i in range(self.N_WALK_LEN):
-# 			current = set()
-# 			for outer in frontier:
-# 				current |= set(self.adj_lists[int(outer)])
-# 			rontier = current - neighbors
-# 			neighbors |= current
-# 		far_nodes = set(self.train_nodes) - neighbors
-# 		neg_samples = random.sample(far_nodes, self.NEG) if self.NEG < len(far_nodes) else far_nodes
-# 		neg.extend([(node, neg_node) for neg_node in neg_samples])
-# 		return neg_samples
-#
-# 	def random_walk_loss(self,features):
-# 		loss = 0
-# 		similarity = torch.mm(features,torch.transpose(features,0,1))
-# 		#similarity = torch.exp(similarity)
-# 		node_score = []
-# 		for node in self.train_nodes:
-# 			pos = self.random_walk(node)
-#
-# 			neg = self.get_negtive_nodes(node)
-# 			#indexs = [list(x) for x in zip(*neg)]
-# 			#node_indexs = [x for x in indexs[0]]
-# 			#neighb_indexs = [x for x in indexs[1]]
-# 			#neg_score = F.cosine_similarity(features[node_indexs],features[neighb_indexs])
-# 			neg_score = similarity[node][neg]
-# 			neg_score = self.Q*torch.mean(torch.log(torch.sigmoid(-neg_score)), 0)
-#
-# 			# multiple positive score
-# 			#indexs = [list(x) for x in zip(*pos)]
-# 			#node_indexs = [x for x in indexs[0]]
-# 			#neighb_indexs = [x for x in indexs[1]]
-# 			#pos_score = F.cosine_similarity(features[node_indexs],features[neighb_indexs])
-# 			pos_score = similarity[node][pos]
-# 			pos_score = torch.log(torch.sigmoid(pos_score))
-# 			node_score.append(torch.mean(-pos_score-neg_score).view(1,-1))
-#
-# 		loss = torch.mean(torch.cat(node_score, 0))
-#
-# 		return loss
-#
+def patchGenerator(G,F,A):
+	random.seed()
 
-# def train(GCN,G,F,A,P,M):
-# 	device = torch.device("cuda:0" if args.cuda else "cpu")
-# 	optimizer = optim.Adam(GCN.parameters(), lr=args.lr,betas=(0.9,0.999))
-# 	# if args.loss == 'shortest':
-# 	# 	Loss = PairWiseLoss()
-# 	# elif args.loss == 'adj':
-# 	# 	Loss = MultiHopLoss()
-# 	# elif args.loss == 'random_walk':
-# 	# 	Loss = RandomWalkLoss()
-#
-# 	for itera in range(1,args.epochs+1):
-# 		print("==========="+str(itera)+"===========")
-# 		loss = 0
-# 		x = time.time()
-# 		for i in range(0,len(G)):
-# 			g = G[i]
-# 			f = F[i]
-# 			a = A[i]
-# 			p = P[i]
-# 			m = M[i]
-#
-# 			if args.cuda:
-# 				f = f.cuda()
-# 				a = a.cuda()
-# 				p = p.cuda()
-# 				m = m.cuda()
-#
-# 			node_features = GCN(g,f)
-# 			if args.loss == 'shortest':
-# 				gcn_loss = Loss(node_features,p,m)
-# 			elif args.loss == 'adj':
-# 				gcn_loss = Loss(node_features,a,m)
-# 			loss += gcn_loss.item()
-# 			optimizer.zero_grad()
-# 			gcn_loss.backward()
-# 			optimizer.step()
-# 		y = time.time()
-# 		print("Time = "+str(y-x))
-# 		print("Loss = "+str(loss))
-# 		#if itera==40 or itera==80:
-# 			#adjust_learning_rate(optimizer,itera)
-# 		if itera%100==0 or itera ==30 or itera==60:
-# 			torch.save(GCN.state_dict(),path+'/model/'+args.dataset+'-'+'epochs-'+str(itera)+'-samples-'+str(args.samples)+'-loss-'+args.loss+'-init-'+args.init+'-GCN.pth')
+	size_graph=len(G)
+	surface_id = random.randint(0,size_graph-1)
+
+	g = G[surface_id] #graph
+	a = A[surface_id] #adjacent matrix
+	f = F[surface_id] #features
+
+	feature_value_num=f.shape[1] # should be 3 if it's vec
+
+	size_node=g.num_nodes()
+	node_id=random.randint(0,size_node-1)
+	print("size_node", size_node)
+	print("node_id",node_id)
+	patch_size=random.randrange(5,13,2)
+	print("patch_size",patch_size)
+	ret_g=dgl.DGLGraph()
+	ret_adj_matrix=np.zeros([patch_size,patch_size])
+	ret_node_feature=np.zeros([patch_size,feature_value_num])
+
+	patch_nodes_queue = [node_id]  # a queue structure
+	patch_nodes=[node_id]
+	cnt=1
+	#collect nodes and store them in patch_nodes
+	while patch_nodes_queue and cnt < patch_size:
+
+		node_id_temp=patch_nodes_queue.pop(0)
+		connected_node_pair=g.out_edges(node_id_temp,'uv')
+		for connected_node in connected_node_pair[1].numpy():
+			if(connected_node not in patch_nodes):
+				patch_nodes.append(connected_node)
+				patch_nodes_queue.append(connected_node)
+				cnt+=1
+				if cnt>=patch_size:
+					break
+
+	min_node_id=min(patch_nodes)
+
+	#init ret_g and ret_adj_matrix
+	ret_g.add_nodes(len(patch_nodes))
+
+	for i in range(0,len(patch_nodes)):
+		for j in range(i,len(patch_nodes)):
+			node1=patch_nodes[i]
+			node2=patch_nodes[j]
+			if(node1!=node2 and a[node1][node2]!=0):
+				ret_adj_matrix[i][j]=1
+				ret_adj_matrix[j][i]=1
+				ret_g.add_edge(i,j)
+
+	#init ret_node_feature
+	for i in range(0,len(patch_nodes)):
+		ret_node_feature[i]=f[patch_nodes[i]]
+
+	return ret_g, ret_adj_matrix, ret_node_feature
+
+def train(GCN,G,F,A):
+	device = torch.device("cuda:0" if args.cuda else "cpu")
+	optimizer = optim.Adam(GCN.parameters(), lr=args.lr,betas=(0.9,0.999))
+	# if args.loss == 'shortest':
+	# 	Loss = PairWiseLoss()
+	# elif args.loss == 'adj':
+	# 	Loss = MultiHopLoss()
+	# elif args.loss == 'random_walk':
+	# 	Loss = RandomWalkLoss()
+	Loss=ProcrustesLoss()
+	for itera in range(1,args.epochs+1):
+		print("==========="+str(itera)+"===========")
+		loss = 0
+		x = time.time()
+		for i in range(0,args.train_sample_per_epoch):
+			patch_graph1,patch_adj_mat1,patch_feature1= patchGenerator(G,F,A)
+			patch_graph2,patch_adj_mat2,patch_feature2= patchGenerator(G,F,A)
+			patch_adj_mat1 = torch.FloatTensor(patch_adj_mat1)
+			patch_feature1 = torch.FloatTensor(patch_feature1)
+			patch_adj_mat2 = torch.FloatTensor(patch_adj_mat2)
+			patch_feature2 = torch.FloatTensor(patch_feature2)
+
+			if args.cuda:
+				patch_adj_mat1=patch_adj_mat1.cuda()
+				patch_feature1=patch_feature1.cuda()
+				patch_adj_mat2=patch_adj_mat2.cuda()
+				patch_feature2=patch_feature2.cuda()
+
+			gcn_patch_feature1=GCN(patch_graph1,patch_feature1)
+			gcn_patch_feature2=GCN(patch_graph2,patch_feature2)
+			gcn_loss=Loss()
+
+		# g = G[i]
+			# f = F[i]
+			# a = A[i]
+			#
+			# if args.cuda:
+			# 	f = f.cuda()
+			# 	a = a.cuda()
+			#
+			# node_features1 = GCN(g,f)
+			#
+			# gcn_loss=Loss()
+			# loss += gcn_loss.item()
+			# optimizer.zero_grad()
+			# gcn_loss.backward()
+			# optimizer.step()
+		y = time.time()
+		print("Time = "+str(y-x))
+		print("Loss = "+str(loss))
+		#if itera==40 or itera==80:
+			#adjust_learning_rate(optimizer,itera)
+		if itera%100==0 or itera ==30 or itera==60:
+			torch.save(GCN.state_dict(),path+'/model/'+args.dataset+'-'+'epochs-'+str(itera)+'-samples-'+str(args.samples)+'-loss-'+args.loss+'-init-'+args.init+'-GCN.pth')
 
 
 def adjust_learning_rate(optimizer, epoch):
@@ -356,34 +354,31 @@ def weights_init_kaiming(m):
 
 def main():
 
-
-
-
 	G = []
 	F = []
 	A = []
-	P = []
-	M = []
-	num_of_files = 1
-	idx = 1
-	# while idx<=args.samples:
-	# 	file_path = './Data/'+args.dataset
-	# 	if os.path.exists(file_path+'/adjacency-matrix-'+'{:03d}'.format(num_of_files)+'.graphml'):
-	# 		g, features, adjacency_matrix, mask,paths = InitGraph(file_path,num_of_files)
-	# 		G.append(g)
-	# 		F.append(features)
-	# 		A.append(adjacency_matrix)
-	# 		P.append(paths)
-	# 		M.append(mask)
-	# 		print('Reading '+str(num_of_files)+'th graph')
-	# 		idx += 1
-	# 	num_of_files += 1
+	num_of_files = 0
+	idx = 0
+	while idx<args.samples:
+		file_path = './data/'+args.dataset+'/extracted_files'
+		if os.path.exists(file_path):
+			g, features, adjacency_matrix= InitGraph(file_path,num_of_files)
+			G.append(g)# G is a dgl graph
+			F.append(features) # F is a n*m numpy array
+			A.append(adjacency_matrix)# A is a n*n numpy array
+			print('Reading '+file_path)
+			idx += 1
+		num_of_files += 1
 
+	p1,a1,f1=patchGenerator(G,F,A)
+	print(p1)
+	print(a1)
+	print(f1)
 
 	# model = GCN(6)
 	# if args.cuda:
 	# 	model.cuda()
-	# # train(model,G,F,A,P,M)
+	# train(model,G,F,A)
 	# inference(args.epochs)
 	# #evulate(100)
 

@@ -103,7 +103,7 @@ def GetVelocity(vec,pos,dim_x,dim_y,dim_z):
 
 
 
-def WriteGraph(vertices,indices,vec,dim_x,dim_y,dim_z,matrix_file=None,node_feature_file=None,featureNum=3):
+def WriteGraph(vertices,indices,vec,dim_x,dim_y,dim_z,matrix_file=None,node_feature_file=None):
 	print(matrix_file)
 	print(node_feature_file)
 	G = nx.Graph()
@@ -125,7 +125,7 @@ def WriteGraph(vertices,indices,vec,dim_x,dim_y,dim_z,matrix_file=None,node_feat
 
 		nodes = list(G.nodes)
 		#print(mapping)
-		node_features = np.zeros((len(nodes),featureNum*3))
+		node_features = np.zeros((len(nodes),5))
 		for i in range(0,len(nodes)):
 			pos =np.asarray([vertices[nodes[i]*3],vertices[nodes[i]*3+1],vertices[nodes[i]*3+2]])
 
@@ -143,18 +143,18 @@ def WriteGraph(vertices,indices,vec,dim_x,dim_y,dim_z,matrix_file=None,node_feat
 				torsion = 0
 				if b_prev and b_follow:
 					torsion = ComputeTorsion(pos_prev, pos, pos_follow)
-				node_features[i][3:3] = torsion
+				node_features[i][3:4] = torsion
 
 				# compute curvature
 				curvature = 0
 				if b_follow:
 					curvature = ComputeCurvature(pos, pos_follow)
 
-				node_features[i][6:] = curvature
+				node_features[i][4:] = curvature
 			else :
 				node_features[i][0:3] = 0
-				node_features[i][3:3] = 0
-				node_features[i][6:] = 0
+				node_features[i][3:4] = 0
+				node_features[i][4:] = 0
 
 		node_features = np.asarray(node_features,dtype='<f')
 		node_features = node_features.flatten('F')

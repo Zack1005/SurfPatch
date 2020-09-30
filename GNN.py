@@ -36,8 +36,6 @@ parser.add_argument('--dataset', type=str,
                     help='')
 parser.add_argument('--init', type=str, default='vec',
                     help='')
-parser.add_argument('--loss', type=str, default = 'shortest',
-                    help='')
 parser.add_argument('--mode', type=str, default = 'train',
                     help='')
 parser.add_argument('--train_sample_per_epoch', type=str, default = 1000,
@@ -348,8 +346,8 @@ def train(GCN,G,F,A):
 		print("Loss = "+str(loss))
 		#if itera==40 or itera==80:
 			#adjust_learning_rate(optimizer,itera)
-		if itera%100==0 or itera ==30 or itera==60:
-			torch.save(GCN.state_dict(),path+args.dataset+'-'+'epochs-'+str(itera)+'-samples-'+str(args.samples)+'-loss-'+args.loss+'-init-'+args.init+'-GCN.pth')
+		if itera%100==0 or itera ==30 or itera==60 or itera==1:
+			torch.save(GCN.state_dict(),path+args.dataset+'-'+'epochs-'+str(itera)+'-samples-'+str(args.train_samples)+'-init-'+args.init+'-GCN.pth')
 
 
 def generatePatchPool():
@@ -445,7 +443,7 @@ def adjust_learning_rate(optimizer, epoch):
 
 def evulate(itera):
 	G = GCN()
-	G.load_state_dict(torch.load(path+'/model/'+args.dataset+'-'+'epochs-'+str(itera)+'-samples-'+str(args.samples)+'-loss-'+args.loss+'-init-'+args.init+'-GCN.pth'))
+	G.load_state_dict(torch.load(path+'/model/'+args.dataset+'-'+'epochs-'+str(itera)+'-samples-'+str(args.samples)+'-init-'+args.init+'-GCN.pth'))
 	t = 0
 	file_path = path+'Data/'+args.dataset
 	for id in Inference[args.dataset]:
@@ -479,7 +477,7 @@ def evulate(itera):
 		features = node_features.numpy()
 		features = np.asarray(features,dtype='<f')
 		features = features.flatten('F')
-		features.tofile(path+'Result/Result/'+args.dataset+'-node-features-'+'{:03d}'.format(id)+'-'+'epochs-'+str(itera)+'-samples-'+str(args.samples)+'-loss-'+args.loss+'-init-'+args.init+'.dat',format='<f')
+		features.tofile(path+'Result/Result/'+args.dataset+'-node-features-'+'{:03d}'.format(id)+'-'+'epochs-'+str(itera)+'-samples-'+str(args.train_samples)+'-init-'+args.init+'.dat',format='<f')
 
 def inference(itera):
 
@@ -487,7 +485,7 @@ def inference(itera):
 		generatePatchPool()
 
 	# G = GCN()
-	# G.load_state_dict(torch.load(path+args.dataset+'-'+'epochs-'+str(itera)+'-samples-'+str(args.samples)+'-loss-'+args.loss+'-init-'+args.init+'-GCN.pth'))
+	# G.load_state_dict(torch.load(path+args.dataset+'-'+'epochs-'+str(itera)+'-samples-'+str(args.samples)+'-init-'+args.init+'-GCN.pth'))
 	# t = 0
 	# file_path = path+'Data/'+args.dataset
 	# for id in range(3000,4000):
@@ -520,7 +518,7 @@ def inference(itera):
 	# 	features = node_features.numpy()
 	# 	features = np.asarray(features,dtype='<f')
 	# 	features = features.flatten('F')
-	# 	features.tofile(path+'fuse/'+args.dataset+'-node-features-'+'{:03d}'.format(id)+'-'+'epochs-'+str(itera)+'-samples-'+str(args.samples)+'-loss-'+args.loss+'-init-'+args.init+'.bin',format='<f')
+	# 	features.tofile(path+'fuse/'+args.dataset+'-node-features-'+'{:03d}'.format(id)+'-'+'epochs-'+str(itera)+'-samples-'+str(args.samples)+'-init-'+args.init+'.bin',format='<f')
 
 def countFileNum(dir,keyword=None):
 

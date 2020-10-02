@@ -107,7 +107,7 @@ def WriteGraph(vertices,indices,vec,dim_x,dim_y,dim_z,matrix_file=None,node_feat
 	print(matrix_file)
 	print(node_feature_file)
 	G = nx.Graph()
-	for i in range(0,len(vertices),3):
+	for i in range(0,len(vertices)):
 		G.add_node((int)(i/3))
 	for j in range(0,len(indices),4):
 		G.add_edge(indices[j+0],indices[j+1])

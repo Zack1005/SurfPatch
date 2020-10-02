@@ -18,7 +18,6 @@ def ReadVectorField(path,dim_x,dim_y,dim_z):
   v=np.fromfile(path,dtype='<f')
   return v.reshape(dim_z,dim_y,dim_x,3).transpose()
 
-
 def ReadSurface(path):
   floatSize = 4
   with open(path, "rb") as f:

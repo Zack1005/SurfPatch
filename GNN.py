@@ -20,6 +20,7 @@ import random
 import pickle
 import struct
 from sklearn.cluster import DBSCAN,KMeans
+from scipy import spatial
 import re
 
 parser = argparse.ArgumentParser(description='PyTorch Implementation of V2V')
@@ -39,7 +40,7 @@ parser.add_argument('--init', type=str, default='vec',
                     help='')
 parser.add_argument('--mode', type=str, default = 'train',
                     help='')
-parser.add_argument('--train_sample_per_epoch', type=str, default = 1000,
+parser.add_argument('--train_sample_per_epoch', type=int, default = 1000,
                     help='')
 parser.add_argument('--regenerate_patch_pool',type=bool,default='False')
 
@@ -299,9 +300,6 @@ def testProcrustesDistance(G,F,A):
 		print(p_distance,"incorrect")
 
 def train(GCN,G,F,A):
-	total_sample_num = countFileNum("./data/" + args.dataset + "/surface_files")
-	args.train_samples = args.sample_split_ratio * total_sample_num
-	args.test_samples = (1.0 - args.sample_split_ratio) * total_sample_num
 
 	random.seed()
 
@@ -350,7 +348,7 @@ def train(GCN,G,F,A):
 		print("Loss = "+str(loss))
 		#if itera==40 or itera==80:
 			#adjust_learning_rate(optimizer,itera)
-		if itera%100==0 or itera ==30 or itera==60 or itera==1:
+		if itera%100==0 or itera ==30 or itera==60 :
 			torch.save(GCN.state_dict(),path+args.dataset+'-'+'epochs-'+str(itera)+'-samples-'+str(args.train_samples)+'-init-'+args.init+'-GCN.pth')
 
 
@@ -499,6 +497,7 @@ def inference(itera):
 	t = 0
 	patch2SurfaceDict={}
 	feature_space_matrix=[]
+	node_dict_array=[]
 	for sid in range(args.train_samples,args.train_samples+args.test_samples):
 
 
@@ -530,34 +529,64 @@ def inference(itera):
 					feature_space_matrix.append(pred_feature.numpy().flatten())
 					for node in nodes_dict:
 						nodes_covered[node] = True
+					node_dict_array.append(nodes_dict)
 
 		y = time.time()
 		print('Inference Time = ' + str(y - x))
 		t += (y - x)
 
 	feature_space_matrix=np.asarray(feature_space_matrix)
-	labels=clustering(np.asarray(feature_space_matrix))
 
-	#from patch label to surface id
-	label2SurfaceId={}
+	#write feature space vectors
 
-	patch_id =0
-	for label in labels:
-		if label not in label2SurfaceId:
-			label2SurfaceId[label] =[]
-		if patch2SurfaceDict[patch_id] not in label2SurfaceId[label]:
-			label2SurfaceId[label].append(patch2SurfaceDict[patch_id])
-		patch_id+=1
-	print(label2SurfaceId)
-	with open(cluster_out_path+args.dataset+'_patch2Surface_dict'+'.bin', "wb") as f:
-		numLabels=len(label2SurfaceId)
-		print("numLabels:",numLabels)
-		f.write(struct.pack('i', numLabels))#write label num
-		for key,surfaceId_arr in label2SurfaceId.items():
-			cluster_len=len(surfaceId_arr)
-			f.write(struct.pack('i',cluster_len))#write how many object in the current cluster
-			for sid in surfaceId_arr:
-				f.write(struct.pack('i',sid))#each surface id in the current cluster
+	with open(cluster_out_path+args.dataset+'_feature_space_matrix_samples_'+str(args.samples)+'.bin',"wb") as f:
+		numVector=len(feature_space_matrix)
+		print("num of vectors: ",numVector)
+		flatten_feature_space_matrix=feature_space_matrix.flatten().tolist()
+		f.write(struct.pack('i',numVector))
+		f.write(struct.pack('i',128))
+		f.write(struct.pack('f'*len(flatten_feature_space_matrix),*flatten_feature_space_matrix))
+
+
+	with open(cluster_out_path + args.dataset + '_patchID2SurfaceID_dict_samples_'+str(args.samples)+'.bin', "wb") as f:
+		numPatch = len(patch2SurfaceDict)
+		print("num of patches:", numPatch)
+		f.write(struct.pack('i', numPatch))  # write label num
+		values=list(patch2SurfaceDict.values())
+		for v in values:
+			f.write(struct.pack('i', v))
+
+	with open(cluster_out_path+args.dataset+'_patchVertex2SurfaceVertex_dict_samples_'+str(args.samples)+'.bin','wb') as f:
+		numPatch=len(node_dict_array)
+		f.write(struct.pack('i',numPatch))
+		for i in range(0,numPatch):
+			numNode=len(node_dict_array[i])
+			f.write(struct.pack('i',numNode))
+			f.write(struct.pack('i'*len(node_dict_array[i]),*node_dict_array[i]))
+
+
+	# labels=clustering(np.asarray(feature_space_matrix))
+	#
+	# #from patch label to surface id
+	# label2SurfaceId={}
+	#
+	# patch_id =0
+	# for label in labels:
+	# 	if label not in label2SurfaceId:
+	# 		label2SurfaceId[label] =[]
+	# 	if patch2SurfaceDict[patch_id] not in label2SurfaceId[label]:
+	# 		label2SurfaceId[label].append(patch2SurfaceDict[patch_id])
+	# 	patch_id+=1
+	# print(label2SurfaceId)
+	# with open(cluster_out_path+args.dataset+'_patch2Surface_dict'+'.bin', "wb") as f:
+	# 	numLabels=len(label2SurfaceId)
+	# 	print("numLabels:",numLabels)
+	# 	f.write(struct.pack('i', numLabels))#write label num
+	# 	for key,surfaceId_arr in label2SurfaceId.items():
+	# 		cluster_len=len(surfaceId_arr)
+	# 		f.write(struct.pack('i',cluster_len))#write how many object in the current cluster
+	# 		for sid in surfaceId_arr:
+	# 			f.write(struct.pack('i',sid))#each surface id in the current cluster
 
 def clustering(X):
 	#X should be a n*m numpy array where n is the object num and m is the feature num.
@@ -589,6 +618,9 @@ def weights_init_kaiming(m):
 		init.constant_(m.bias.data, 0.0)
 
 def main():
+	total_sample_num=countFileNum("./data/"+args.dataset+"/surface_files")
+	args.train_samples=args.sample_split_ratio*total_sample_num
+	args.test_samples=(1.0-args.sample_split_ratio)*total_sample_num
 
 	G,F,A=InitGraphs(0,args.train_samples)
 

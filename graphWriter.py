@@ -4,7 +4,7 @@ import networkx as nx
 import SurfaceProcesser as sp
 import surfaceIO
 import numpy as np
-import GNN
+#import GNN
 parser = argparse.ArgumentParser(description='patch generator')
 parser.add_argument('--case_num', type=int, default=4000,
                     help='number of train size')
@@ -26,8 +26,9 @@ def main():
     while idx < args.case_num:
         caseId = "{0:0=3d}".format(idx)  # to form idx to three digits
         surface_file_path = "./data/" + args.dataset + "/surface_files/"+args.dataset+"_surfaces_" + caseId + ".bin"
-        print(surface_file_path)
         vertices, normals, indices = surfaceIO.ReadSurface(surface_file_path)
+        if(idx%100==0):
+            print(surface_file_path)
         adjacent_matrix_file_path = "./data/" + args.dataset + "/extracted_files/adjacent_matrix_" + caseId + ".graphml"
         node_features_file_path = "./data/" + args.dataset + "/extracted_files/node_features_" + caseId + ".bin"
 

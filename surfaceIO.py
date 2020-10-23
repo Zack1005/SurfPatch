@@ -32,8 +32,6 @@ def ReadSurface(path):
       t = struct.unpack('f', f.read(floatSize))[0]
       vertices += [x,y,z]
       #vertices[i] = np.asarray([x,y,z,t])
-    print(numVertices)
-    print(len(vertices))
     normals = []
     #normals = np.zeros((numVertices,3))
     for i in range(numVertices):

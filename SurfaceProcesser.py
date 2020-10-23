@@ -104,10 +104,9 @@ def GetVelocity(vec,pos,dim_x,dim_y,dim_z):
 
 
 def WriteGraph(vertices,indices,vec,dim_x,dim_y,dim_z,matrix_file=None,node_feature_file=None):
-	print(matrix_file)
-	print(node_feature_file)
+
 	G = nx.Graph()
-	for i in range(0,len(vertices)):
+	for i in range(0,len(vertices),3):
 		G.add_node((int)(i/3))
 	for j in range(0,len(indices),4):
 		G.add_edge(indices[j+0],indices[j+1])
@@ -115,7 +114,6 @@ def WriteGraph(vertices,indices,vec,dim_x,dim_y,dim_z,matrix_file=None,node_feat
 		G.add_edge(indices[j+0],indices[j+2])
 		G.add_edge(indices[j+2],indices[j+3])
 		G.add_edge(indices[j+1],indices[j+3])
-	print(nx.is_connected(G))
 	if nx.is_connected(G):
 		#adjacency_matrix = nx.to_numpy_matrix(G)
 		#adjacency_matrix = np.asarray(adjacency_matrix,dtype='int16')
@@ -174,7 +172,8 @@ def WriteGraph(vertices,indices,vec,dim_x,dim_y,dim_z,matrix_file=None,node_feat
 		# 	#print(values-short_path)
 		# 	short_path = short_path.flatten('F')
 		# 	short_path.tofile(shortest_path_file,format='int16')
-
+	else:
+		print("Unconnected:",matrix_file)
 
 def ReadVec(file,dim_x,dim_y,dim_z):
 	v = np.fromfile(file,dtype='<f')

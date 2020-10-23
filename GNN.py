@@ -15,18 +15,18 @@ from dgl.nn.pytorch import GraphConv,SAGEConv, SumPooling
 from dgl import DGLGraph
 import networkx as nx
 import SurfaceProcesser as sp
-import surfaceIO
+from surfaceIO import ReadSurface
 import random
 import pickle
 import struct
 from sklearn.cluster import DBSCAN,KMeans
-from scipy import spatial
+from scipy.spatial import procrustes
 import re
 
 parser = argparse.ArgumentParser(description='PyTorch Implementation of V2V')
 parser.add_argument('--lr', type=float, default=1e-4, metavar='LR',
                     help='learning rate of G')
-parser.add_argument('--no-cuda', action='store_true', default=False,
+parser.add_argument('--no-cuda', action='store_true', default=True,
                     help='disables CUDA training')
 parser.add_argument('--batch_size', type=int, default=1, metavar='N',
                     help='input batch size for training')
@@ -42,19 +42,17 @@ parser.add_argument('--mode', type=str, default = 'train',
                     help='')
 parser.add_argument('--train_sample_per_epoch', type=int, default = 1000,
                     help='')
-parser.add_argument('--regenerate_patch_pool',type=bool,default='False')
-
-parser.add_argument('--write_patch_pool',type=bool,default='False')
+# parser.add_argument('--regenerate_patch_pool',type=bool,default='False')
+#
+# parser.add_argument('--write_patch_pool',type=bool,default='False')
 
 parser.add_argument('--format',type=str, default='graphml',help='number of test sample size')
 
-parser.add_argument('--DBSCAN_eps', type=float,default='4')
-
-parser.add_argument('--DBSCAN_min_samples',type=int,default='5')
-
-parser.add_argument('--sample_split_ratio',type=float,default=0.8)
+parser.add_argument('--test_size',type=float,default=0.2)
 
 parser.add_argument('--samples',type=float,default=1000)
+
+parser.add_argument('--patch_size',type=int,default=25)
 
 args = parser.parse_args()
 print("Enable cuda?", not args.no_cuda)
@@ -73,8 +71,17 @@ else:
 	path = './data/model_snapshot/'
 	cluster_out_path='E:/cudaProjects/SurfPatchQt/cluster_data/'
 
+
+args.train_samples=(int)((1.0-args.test_size)*args.samples)
+args.test_samples=(int)((args.test_size)*args.samples)
+
 def InitGraph(file_path,id):
-	graph = nx.read_graphml(file_path+'/adjacent_matrix_'+'{:03d}'.format(id)+'.graphml')
+# return:
+# graph: a networkx object
+# feature: a numpy object
+# adjacency matrix: a numpy object
+
+	graph = nx.read_graphml(file_path+'/adjacent_matrix_'+'{:03d}'.format(id)+'.graphml',node_type=int)
 	print('Reading '+file_path+'/adjacent_matrix_'+'{:03d}'.format(id)+'.graphml')
 	num_of_nodes = nx.number_of_nodes(graph)
 	adjacency_matrix = nx.to_numpy_matrix(graph)
@@ -89,7 +96,6 @@ def InitGraph(file_path,id):
 		features = features[:,3:4]
 	elif args.init == 'curvature':
 		features = features[:,4:]
-	G=dgl.from_networkx(graph)
 	# G.add_nodes(num_of_nodes)
 	# for i in range(0,num_of_nodes):
 	# 	for j in range(0,i):
@@ -97,21 +103,23 @@ def InitGraph(file_path,id):
 	# 			G.add_edge(i,j)
 	# G.add_edges(G.nodes(), G.nodes())
 
-	return G,features,adjacency_matrix
+	return graph,features,adjacency_matrix
 
 def InitGraphs(start, num):
-	G = []
-	F = []
-	A = []
+	G = [None]*num
+	F = [None]*num
+	A = [None]*num
+	idx=0
 	num_of_files = start
-	while num_of_files < start+num:
+	while idx < num:
+		num_of_files=idx+start
 		file_path = './data/' + args.dataset + '/extracted_files'
 		if os.path.exists(file_path+'/adjacent_matrix_'+'{:03d}'.format(num_of_files)+'.graphml'):
 			g, features, adjacency_matrix = InitGraph(file_path, num_of_files)
-			G.append(g)  # G is a dgl graph
-			F.append(features)  # F is a n*m numpy array
-			A.append(adjacency_matrix)  # A is a n*n numpy array
-		num_of_files += 1
+			G[idx]=g # G is a networkx graph
+			F[idx]=features# F is a n*m numpy array
+			A[idx]=adjacency_matrix # A is a n*n numpy array
+		idx+=1
 	return G, F, A
 
 def GenerateAdjList(adjacency_matrix):
@@ -157,60 +165,16 @@ class ProcrustesLoss(nn.Module):
 		super(ProcrustesLoss, self).__init__()
 		self.loss=nn.L1Loss()
 
-	def orthogonal_procrustes(self,A, B, check_finite=True):
-		# if check_finite:
-		# 	np.asarray_chkfinite(A.numpy())
-		# 	np.asarray_chkfinite(B.numpy())
-		# else:
-		# 	A = np.asanyarray(A)
-		# 	B = np.asanyarray(B)
-		if A.ndim != 2:
-			raise ValueError('expected ndim to be 2, but observed %s' % A.ndim)
-		if A.shape != B.shape:
-			raise ValueError('the shapes of A and B differ (%s vs %s)' % (
-				A.shape, B.shape))
-		# Be clever with transposes, with the intention to save memory.
-		u, w, vt = torch.svd(B.T.mm(A).T)
-		R = u.mm(vt)
-		scale = w.sum()
-		return R, scale
+	def procrustes_distance(self,patch_vertices1,patch_vertices2):
 
-	def procrustes_distance(self,patch_feature1,patch_feature2):
-		mtx1 = patch_feature1
-		mtx2 = patch_feature2
+		mtx1 = patch_vertices1
+		mtx2 = patch_vertices2
+		mtx1, mtx2, disparity = procrustes(mtx1, mtx2)
+		return torch.tensor(round(disparity))
 
-		if mtx1.ndim != 2 or mtx2.ndim != 2:
-			raise ValueError("Input matrices must be two-dimensional")
-		if mtx1.shape != mtx2.shape:
-			print(mtx1.shape,mtx2.shape)
-			raise ValueError("Input matrices must be of same shape")
-		if mtx1.size == 0:
-			raise ValueError("Input matrices must be >0 rows and >0 cols")
 
-		# translate all the data to the origin
-		mtx1 -= torch.mean(mtx1, 0)
-		mtx2 -= torch.mean(mtx2, 0)
-
-		norm1 = torch.norm(mtx1)
-		norm2 = torch.norm(mtx2)
-
-		if norm1 == 0 or norm2 == 0:
-			raise ValueError("Input matrices must contain >1 unique points")
-
-		# change scaling of data (in rows) such that trace(mtx*mtx') = 1
-		mtx1 /= norm1
-		mtx2 /= norm2
-
-		# transform mtx2 to minimize disparity
-		R, s = self.orthogonal_procrustes(mtx1, mtx2)
-		mtx2 = torch.mm(mtx2, R.T) * s
-
-		# measure the dissimilarity between the two datasets
-		disparity = torch.sqrt(torch.sum(torch.square(mtx1 - mtx2)))
-		return disparity
-
-	def forward(self,patch_feature1,patch_feature2, gcn_feature1,gcn_feature2):
-		p_distance=self.procrustes_distance(patch_feature1,patch_feature2)
+	def forward(self,gcn_feature1,gcn_feature2,patch_vertices1,patch_vertices2):
+		p_distance=self.procrustes_distance(patch_vertices1,patch_vertices2)
 		feature_distance_of_gcn=(torch.norm(gcn_feature1-gcn_feature2,p=2))
 
 		return self.loss(feature_distance_of_gcn,p_distance)
@@ -236,25 +200,38 @@ class MultiHopLoss(nn.Module):
 		similarity = torch.mm(features,torch.transpose(features,0,1)) 
 		return nn.MSELoss()(similarity*mask,adjacency_matrix*mask)
 
-def patchGenerator(G,F,A,patch_size,surface_id=None,node_id=None):
+def getSurfaceFilePath(surface_id,dataset):
 
+	caseId = "{0:0=3d}".format(surface_id)  # to form idx to three digits
+	return "./data/" + dataset + "/surface_files/" + dataset + "_surfaces_" + caseId + ".bin"
+
+def patchGenerator(G,F,A,patch_size,surface_id=None,node_id=None,vertices=None):
+	random.seed()
 	if surface_id is None:
 		size_graph=len(G)
 		surface_id = random.randint(0,size_graph-1)
 
+
 	g = G[surface_id] #graph
 	a = A[surface_id] #adjacent matrix
 	f = F[surface_id] #features
-	feature_value_num=f.shape[1] # should be 3 if it's vec
 
+	if g is None:
+		raise ValueError("Surface %d does not have a graph",surface_id)
+
+
+	surface_file_path = getSurfaceFilePath(surface_id,args.dataset)
+	if vertices is None:
+		vertices,_,_=ReadSurface(surface_file_path)
+	feature_value_num=f.shape[1] # should be 3 if it's vec
 	if node_id is None:
-		size_node=g.num_nodes()
+		size_node=len(g)
 		node_id=random.randint(0,size_node-1)
 
 	ret_g=dgl.DGLGraph()
-
 	ret_adj_matrix=np.zeros([patch_size,patch_size])
 	ret_node_feature=np.zeros([patch_size,feature_value_num])
+	ret_vertices=np.zeros((patch_size,3))
 
 	patch_nodes_queue = [node_id]  # a queue structure
 	patch_nodes=[node_id]
@@ -262,11 +239,10 @@ def patchGenerator(G,F,A,patch_size,surface_id=None,node_id=None):
 	while patch_nodes_queue and len(patch_nodes) < patch_size:
 
 		node_id_temp=patch_nodes_queue.pop(0)
-		if not g.has_nodes(node_id_temp):
-			continue
-		connected_node_pair=g.out_edges(node_id_temp,'uv')
-		for connected_node in connected_node_pair[1].numpy():
-			if connected_node not in patch_nodes and len(patch_nodes) <patch_size:
+
+		neighbors=[x for x in g.neighbors(node_id_temp)]
+		for connected_node in neighbors:
+			if connected_node not in patch_nodes and len(patch_nodes)<patch_size:
 				patch_nodes.append(connected_node)
 				patch_nodes_queue.append(connected_node)
 
@@ -286,13 +262,17 @@ def patchGenerator(G,F,A,patch_size,surface_id=None,node_id=None):
 	for i in range(0,len(patch_nodes)):
 		ret_node_feature[i]=f[patch_nodes[i]]
 
+	for i in range(0,len(patch_nodes)):
+		ret_vertices[i]=[vertices[patch_nodes[i]*3],vertices[patch_nodes[i]*3+1],vertices[patch_nodes[i]*3+2]]
+
 	ret_g=dgl.add_self_loop(ret_g)
 
-	return ret_g, ret_adj_matrix, ret_node_feature,patch_nodes,
+	return ret_g, ret_adj_matrix, ret_node_feature,patch_nodes, ret_vertices
 
 def testProcrustesDistance(G,F,A):
-	g1,a1,f1,_=patchGenerator(G,F,A)
+	g1,a1,f1,_,_=patchGenerator(G,F,A,5)
 	Loss=ProcrustesLoss()
+	f1=torch.FloatTensor(f1)
 	p_distance=Loss.procrustes_distance(f1,f1)
 	if(p_distance==0):
 		print("correct")
@@ -312,14 +292,13 @@ def train(GCN,G,F,A):
 		loss = torch.tensor([0.0],device=device)
 		x = time.time()
 		for i in range(0,args.train_sample_per_epoch):
-			patch_size=5
 
-			patch_graph1,patch_adj_mat1,patch_feature1,_= patchGenerator(G,F,A,patch_size)
-			while (patch_graph1.num_nodes() is not patch_size):
-				patch_graph1, patch_adj_mat1, patch_feature1, _ = patchGenerator(G, F, A, patch_size)
-			patch_graph2,patch_adj_mat2,patch_feature2,_= patchGenerator(G,F,A,patch_size)
-			while(patch_graph2.num_nodes() is not patch_size):
-				patch_graph2, patch_adj_mat2, patch_feature2, _ = patchGenerator(G, F, A, patch_size)
+			patch_graph1,patch_adj_mat1,patch_feature1,_,patch_vertices1= patchGenerator(G,F,A,args.patch_size)
+			while (patch_graph1.num_nodes() is not args.patch_size):
+				patch_graph1, patch_adj_mat1, patch_feature1, _ ,patch_vertices1= patchGenerator(G, F, A, args.patch_size)
+			patch_graph2,patch_adj_mat2,patch_feature2,_,patch_vertices2= patchGenerator(G,F,A,args.patch_size)
+			while(patch_graph2.num_nodes() is not args.patch_size):
+				patch_graph2, patch_adj_mat2, patch_feature2, _, patch_vertices2 = patchGenerator(G, F, A, args.patch_size)
 
 			patch_adj_mat1 = torch.FloatTensor(patch_adj_mat1)
 			patch_feature1 = torch.FloatTensor(patch_feature1)
@@ -337,7 +316,7 @@ def train(GCN,G,F,A):
 			gcn_patch_feature1=GCN(patch_graph1,patch_feature1)
 			gcn_patch_feature2=GCN(patch_graph2,patch_feature2)
 
-			gcn_loss=Loss(patch_feature1,patch_feature2,gcn_patch_feature1,gcn_patch_feature2).to(device)
+			gcn_loss=Loss(gcn_patch_feature1,gcn_patch_feature2,patch_vertices1,patch_vertices2).to(device)
 			loss+=gcn_loss.item()
 			optimizer.zero_grad()
 			gcn_loss.backward()
@@ -349,96 +328,96 @@ def train(GCN,G,F,A):
 		#if itera==40 or itera==80:
 			#adjust_learning_rate(optimizer,itera)
 		if itera%100==0 or itera ==30 or itera==60 :
-			torch.save(GCN.state_dict(),path+args.dataset+'-'+'epochs-'+str(itera)+'-samples-'+str(args.train_samples)+'-init-'+args.init+'-GCN.pth')
+			torch.save(GCN.state_dict(),path+args.dataset+'-'+'epochs-'+str(itera)+'-samples-'+str(args.samples)+'-init-'+args.init+'-GCN.pth')
 
 
-def generatePatchPool():
-#save graph file for a single file
-
-	sample_num=countFileNum("./data/"+args.dataset+"/surface_files/")
-	surface_idx=0
-	patchG={}
-	patchF={}
-	patchA={}
-	while(surface_idx<sample_num):
-		surface_id=surface_idx
-		format_surface_id = "{0:0=3d}".format(surface_id)  # to form idx to three digits
-		surface_file_path = "./data/" + args.dataset + "/surface_files/" + args.dataset + "_surfaces_" + format_surface_id + ".bin"
-
-		if (os.path.exists(surface_file_path)):
-			print("Reading Surface:", surface_file_path)
-			patchG[surface_id]=[]
-			patchF[surface_id]=[]
-			patchA[surface_id]=[]
-
-			vertices, normals, indices = surfaceIO.ReadSurface(surface_file_path)
-			vertices = np.asarray(vertices)
-			numVertices=(int)(len(vertices)/3)
-			nodes_covered = np.zeros((numVertices), dtype=bool)
-
-			G, F, A = InitGraphs(surface_idx, 1)
-			for node_id in range(0, numVertices):
-				if not nodes_covered[node_id]:
-					g, a, f, nodes_dict = patchGenerator(G,F,A,5,0,node_id)# g is a dgl graph
-
-					patch_id=len(patchG)
-
-					patchG[surface_id].append(g)
-					patchA[surface_id].append(a)
-					patchF[surface_id].append(f)
-
-					for node in nodes_dict:
-						nodes_covered[node]=True
-
-		surface_idx+=1
-
-	if args.write_patch_pool:
-
-		patch_file_path = "./data/" + args.dataset + "/patch_pool/" + args.dataset + "_patch_pool"+".graphml"
-		print("Writing patch:", patch_file_path)
-		f=open(patch_file_path,'wb')
-		pickle.dump(patchG)
-		f.close()
-
-		feature_file_path = "./data/" + args.dataset + "/patch_pool/" + args.dataset + "_patch_pool_feature"+ ".bin"
-		f=open(feature_file_path,'wb')
-		pickle.dump(patchF)
-		f.close()
-		print("Writing patch feature:", feature_file_path)
-
-		adj_file_path = "./data/" + args.dataset + "/patch_pool/" + args.dataset + "_patch_pool_adj" + ".bin"
-		f = open(adj_file_path, 'wb')
-		pickle.dump(patchA)
-		f.close()
-		print("Writing patch feature:", adj_file_path)
-
-	return patchG, patchF,patchA
-
-def readPatchPool():
-
-	surface_id=args.train_num
-	#load dict of patch2SurfaceDict
-	sample_num=countFileNum("./data/"+args.dataset+"/surface_files/")
-
-	patch_file_path = "./data/" + args.dataset + "/patch_pool/" + args.dataset + "_patch_pool" + ".graphml"
-	print("Writing patch:", patch_file_path)
-	f = open(patch_file_path, 'rb')
-	patchG=pickle.load(f)
-	f.close()
-
-	feature_file_path = "./data/" + args.dataset + "/patch_pool/" + args.dataset + "_patch_pool_feature" + ".bin"
-	f = open(feature_file_path, 'rb')
-	patchF=pickle.load(f)
-	f.close()
-	print("Writing patch feature:", feature_file_path)
-
-	adj_file_path = "./data/" + args.dataset + "/patch_pool/" + args.dataset + "_patch_pool_adj" + ".bin"
-	f = open(adj_file_path, 'rb')
-	patchA=pickle.load(f)
-	f.close()
-	print("Writing patch feature:", adj_file_path)
-
-	return patchG, patchF,patchA
+# def generatePatchPool():
+# #save graph file for a single file
+#
+# 	sample_num=countFileNum("./data/"+args.dataset+"/surface_files/")
+# 	surface_idx=0
+# 	patchG={}
+# 	patchF={}
+# 	patchA={}
+# 	while(surface_idx<sample_num):
+# 		surface_id=surface_idx
+# 		format_surface_id = "{0:0=3d}".format(surface_id)  # to form idx to three digits
+# 		surface_file_path = "./data/" + args.dataset + "/surface_files/" + args.dataset + "_surfaces_" + format_surface_id + ".bin"
+#
+# 		if (os.path.exists(surface_file_path)):
+# 			print("Reading Surface:", surface_file_path)
+# 			patchG[surface_id]=[]
+# 			patchF[surface_id]=[]
+# 			patchA[surface_id]=[]
+#
+# 			vertices, normals, indices = surfaceIO.ReadSurface(surface_file_path)
+# 			vertices = np.asarray(vertices)
+# 			numVertices=(int)(len(vertices)/3)
+# 			nodes_covered = np.zeros((numVertices), dtype=bool)
+#
+# 			G, F, A = InitGraphs(surface_idx, 1)
+# 			for node_id in range(0, numVertices):
+# 				if not nodes_covered[node_id]:
+# 					g, a, f, nodes_dict = patchGenerator(G,F,A,5,0,node_id)# g is a dgl graph
+#
+# 					patch_id=len(patchG)
+#
+# 					patchG[surface_id].append(g)
+# 					patchA[surface_id].append(a)
+# 					patchF[surface_id].append(f)
+#
+# 					for node in nodes_dict:
+# 						nodes_covered[node]=True
+#
+# 		surface_idx+=1
+#
+# 	if args.write_patch_pool:
+#
+# 		patch_file_path = "./data/" + args.dataset + "/patch_pool/" + args.dataset + "_patch_pool"+".graphml"
+# 		print("Writing patch:", patch_file_path)
+# 		f=open(patch_file_path,'wb')
+# 		pickle.dump(patchG)
+# 		f.close()
+#
+# 		feature_file_path = "./data/" + args.dataset + "/patch_pool/" + args.dataset + "_patch_pool_feature"+ ".bin"
+# 		f=open(feature_file_path,'wb')
+# 		pickle.dump(patchF)
+# 		f.close()
+# 		print("Writing patch feature:", feature_file_path)
+#
+# 		adj_file_path = "./data/" + args.dataset + "/patch_pool/" + args.dataset + "_patch_pool_adj" + ".bin"
+# 		f = open(adj_file_path, 'wb')
+# 		pickle.dump(patchA)
+# 		f.close()
+# 		print("Writing patch feature:", adj_file_path)
+#
+# 	return patchG, patchF,patchA
+#
+# def readPatchPool():
+#
+# 	surface_id=args.train_num
+# 	#load dict of patch2SurfaceDict
+# 	sample_num=countFileNum("./data/"+args.dataset+"/surface_files/")
+#
+# 	patch_file_path = "./data/" + args.dataset + "/patch_pool/" + args.dataset + "_patch_pool" + ".graphml"
+# 	print("Writing patch:", patch_file_path)
+# 	f = open(patch_file_path, 'rb')
+# 	patchG=pickle.load(f)
+# 	f.close()
+#
+# 	feature_file_path = "./data/" + args.dataset + "/patch_pool/" + args.dataset + "_patch_pool_feature" + ".bin"
+# 	f = open(feature_file_path, 'rb')
+# 	patchF=pickle.load(f)
+# 	f.close()
+# 	print("Writing patch feature:", feature_file_path)
+#
+# 	adj_file_path = "./data/" + args.dataset + "/patch_pool/" + args.dataset + "_patch_pool_adj" + ".bin"
+# 	f = open(adj_file_path, 'rb')
+# 	patchA=pickle.load(f)
+# 	f.close()
+# 	print("Writing patch feature:", adj_file_path)
+#
+# 	return patchG, patchF,patchA
 
 def adjust_learning_rate(optimizer, epoch):
     """Sets the learning rate to the initial LR decayed by 10 every 40 epochs"""
@@ -448,7 +427,7 @@ def adjust_learning_rate(optimizer, epoch):
 
 def evulate(itera):
 	G = GCN()
-	G.load_state_dict(torch.load(path+'/model/'+args.dataset+'-'+'epochs-'+str(itera)+'-samples-'+str(args.train_samples)+'-init-'+args.init+'-GCN.pth'))
+	G.load_state_dict(torch.load(path+'/model/'+args.dataset+'-'+'epochs-'+str(itera)+'-samples-'+str(args.samples)+'-init-'+args.init+'-GCN.pth'))
 	t = 0
 	file_path = path+'Data/'+args.dataset
 	for id in Inference[args.dataset]:
@@ -482,24 +461,21 @@ def evulate(itera):
 		features = node_features.numpy()
 		features = np.asarray(features,dtype='<f')
 		features = features.flatten('F')
-		features.tofile(path+'Result/Result/'+args.dataset+'-node-features-'+'{:03d}'.format(id)+'-'+'epochs-'+str(itera)+'-samples-'+str(args.train_samples)+'-init-'+args.init+'.dat',format='<f')
+		features.tofile(path+'Result/Result/'+args.dataset+'-node-features-'+'{:03d}'.format(id)+'-'+'epochs-'+str(itera)+'-samples-'+str(args.samples)+'-init-'+args.init+'.dat',format='<f')
 
 def inference(itera):
-	total_sample_num=countFileNum("./data/"+args.dataset+"/surface_files")
 
-	args.train_samples=(int)((1.0-args.sample_split_ratio)*total_sample_num)
-	args.test_samples=(int)(args.sample_split_ratio*total_sample_num)
-	print(total_sample_num)
 #	AllPatchG,AllPatchF,AllPatchA = generatePatchPool() if args.regenerate_patch_pool else readPatchPool()
 
 	model = GCN()
 	model.load_state_dict(torch.load(path+args.dataset+'-'+'epochs-'+str(itera)+'-samples-'+str(args.samples)+'-init-'+args.init+'-GCN.pth'))
+	print(path+args.dataset+'-'+'epochs-'+str(itera)+'-samples-'+str(args.samples)+'-init-'+args.init+'-GCN.pth')
 	t = 0
 	patch2SurfaceDict={}
 	feature_space_matrix=[]
 	node_dict_array=[]
 	for sid in range(args.train_samples,args.train_samples+args.test_samples):
-
+#	for sid in range(3999,4000):
 
 		surface_id = sid
 		format_surface_id = "{0:0=3d}".format(surface_id)  # to form idx to three digits
@@ -507,21 +483,44 @@ def inference(itera):
 		x = time.time()
 		if (os.path.exists(surface_file_path)):
 
-			vertices, normals, indices = surfaceIO.ReadSurface(surface_file_path)
+			vertices, normals, indices = ReadSurface(surface_file_path)
 			numVertices = (int)(len(vertices) / 3)
 			nodes_covered = np.zeros((numVertices), dtype=bool)
-
+			print(len(vertices))
 			G, F, A = InitGraphs(surface_id, 1)
 
 			if not G:
 				continue
 
+			i=0
+			cnt=0
+			# while i<100 and cnt<500:
+			# 	random.seed()
+			# 	size_node = numVertices
+			# 	node_id = random.randint(0, size_node - 1)
+			# 	if not nodes_covered[node_id]:
+			# 		g, a, f, nodes_dict, patch_vertices = patchGenerator(G, F, A, args.patch_size, 0, vertices=vertices)  # networkx is a dgl graph
+			#
+			# 		f = torch.FloatTensor(f)
+			# 		a = torch.FloatTensor(a)
+			# 		with torch.no_grad():
+			# 			pred_feature = model(g, f)
+			# 		patch_id = len(feature_space_matrix)
+			# 		patch2SurfaceDict[patch_id] = sid
+			# 		feature_space_matrix.append(pred_feature.numpy().flatten())
+			# 		for node in nodes_dict:
+			# 			nodes_covered[node] = True
+			# 		node_dict_array.append(nodes_dict)
+			# 		i+=1
+			# 		nodes_covered[node_id]=True
+			# 	cnt+=1
+
 			for node_id in range(0, numVertices):
 				if not nodes_covered[node_id]:
-					g, a, f, nodes_dict = patchGenerator(G, F, A, 5, 0, node_id)  # g is a dgl graph
+					g, a, f, nodes_dict,patch_vertices = patchGenerator(G, F, A, args.patch_size, 0, node_id,vertices)  # networkx is a dgl graph
+
 					f=torch.FloatTensor(f)
 					a=torch.FloatTensor(a)
-
 					with torch.no_grad():
 						pred_feature = model(g, f)
 					patch_id = len(feature_space_matrix)
@@ -535,7 +534,13 @@ def inference(itera):
 		print('Inference Time = ' + str(y - x))
 		t += (y - x)
 
-	feature_space_matrix=np.asarray(feature_space_matrix)
+	feature_space_matrix=np.array(feature_space_matrix)
+
+	vector_mag=np.linalg.norm(feature_space_matrix,axis=1)
+	vector_mag=vector_mag[:,np.newaxis]
+#	vector_mag.reshape(vector_mag.ndim)
+
+	feature_space_matrix=feature_space_matrix/vector_mag
 
 	#write feature space vectors
 
@@ -618,21 +623,16 @@ def weights_init_kaiming(m):
 		init.constant_(m.bias.data, 0.0)
 
 def main():
-	total_sample_num=countFileNum("./data/"+args.dataset+"/surface_files")
-	args.train_samples=args.sample_split_ratio*total_sample_num
-	args.test_samples=(1.0-args.sample_split_ratio)*total_sample_num
 
 	G,F,A=InitGraphs(0,args.train_samples)
-
-#	testProcrustesDistance(G,F,A)
+	#testProcrustesDistance(G,F,A)
 
 	model = GCN()
 	if args.cuda:
 		model.cuda(device)
-	print(model)
 	train(model,G,F,A)
-#	inference(args.epochs)
-	# #evulate(100)
+
+	#evulate(100)
 
 if __name__== "__main__":
 	if args.mode =='train':
